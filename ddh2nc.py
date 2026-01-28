@@ -6,6 +6,8 @@ import xarray as xr
 import numpy as np
 from astropy.time import Time as jdTime
 from pathlib import Path
+import tqdm
+
 
 xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
     
@@ -16,14 +18,19 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
         # Filter for .fa files
         print(f'Tarball: {tar.name}')
         fasta_members = [m for m in tar.getmembers() if m.name.endswith("s")]
-        print(f'Tarball:  number of time-steps {len(fasta_members)}')
+
+        time_steps = len(fasta_members)
+        print(f'Tarball:  number of time-steps {time_steps}')
+
 
         with tempfile.TemporaryDirectory() as tmpdir:
             td = Path(tmpdir)
             print(f'Created tmp directory {td}')
             
+            time_list = []
             # Process remaining (all) files
-            for tx, member in enumerate(fasta_members):
+            print(f'Extracting to {tmpdir}')
+            for tx, member in (enumerate(tqdm.tqdm(fasta_members))):
                 # 1. Extract FASTA to a temp file
                 fasta_path = td / os.path.basename(member.name)
                 with tar.extractfile(member) as f_in, open(fasta_path, "wb") as f_out:
@@ -49,6 +56,7 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
                 jd = np.fromstring(result.stdout, sep ='\n')
                 jd = jdTime(jd[0], format = 'jd')
                 jd = jd.to_value(format='datetime64')
+                time_list.append(jd)
 
                 # 2.2 Extract all data given in article list
                 subprocess.run([
@@ -62,37 +70,41 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
                 stdout = subprocess.DEVNULL,
                 check=True)
 
-
                 # 3. Read in articles from dta files, save to DataArrays
+                data = np.ones([n,d])
                 for index, article in enumerate(articles):
                    # article data
                     datFile =  td / f"{fasta_path.stem}.tmp.{article}.dta"
                     docFile =  td / f"{fasta_path.stem}.tmp.{article}.doc"
                     data = np.loadtxt(datFile) 
                     da_data = data[:,2].reshape(d,n).transpose()
-
-                    da = xr.DataArray(data = da_data.reshape(1,n,d),
-                            dims = [ 'time', 'levels', 'domain', ],
-                            coords={'levels':np.arange(n)+1,
-                                'domain' : np.arange(d)+1,
-                                'time' : [jd]
-                                },
-                            name = article
-                            )
+                    
                     # non indexed coordinates: pressure and height
-                    da = da.assign_coords(pressure=(['levels','domain'], data[:,0].reshape(d,n).transpose()))
-                    da = da.assign_coords(height=(['levels','domain'], data[:,1].reshape(d,n).transpose()))
+                    #da = da.assign_coords(pressure=(['levels','domain'], data[:,0].reshape(d,n).transpose()))
+                    #da = da.assign_coords(height=(['levels','domain'], data[:,1].reshape(d,n).transpose()))
 
+                    # If data_all is empty initialize the Datarrays
                     if (len(data_all) < len(articles)):
+                        da = xr.DataArray(data = np.zeros([time_steps,n,d]),
+                                dims = [ 'time', 'levels', 'domain', ],
+                                coords={'levels':np.arange(n)+1,
+                                    'domain' : np.arange(d)+1,
+                                    #'time' : [jd]
+                                    },
+                                name = article
+                                )
                         # read in attribures for article
                         doc  = parse_ddh_attributes(docFile)
                         da.attrs = doc # store attributes
+                        da[tx]=da_data
                         print(f'Appending article {da.name}')
                         data_all.append(da)
+                    elif(da[tx].coords['levels'].shape[0] != n or 
+                            da[tx].coords['domain'].shape[0] != d):
+                        print('ERROR: CHANGE in levels/domain')
+                        return
                     else:
-                        data_all[index] = xr.concat([data_all[index], da], dim='time')
-
-
+                        da[tx]=da_data
 
         if(not os.path.exists(tmpdir)):
             print('\nTemporary dir removed succesfully')
@@ -106,6 +118,7 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
     
     ds.attrs['Number of Domains'] = d
     ds.attrs['Number of levels'] = n
+    ds.coords['time'] = np.array(time_list)
 
     return ds
 
@@ -132,5 +145,5 @@ def parse_ddh_attributes(file_path):
 with open('list') as file:
     articles = [line.rstrip() for line in file]
 
-DS = process_tar_to_netcdf(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
-#DS = process_tar_to_netcdf(tar_path = 'data/ddh_files.tar.gz', articles= articles, output_nc = 'test.nc')
+#DS = process_tar_to_netcdf(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
+DS = process_tar_to_netcdf(tar_path = 'data/ddh_files.tar.gz', articles= articles, output_nc = 'test.nc')

@@ -11,7 +11,7 @@ import tqdm
 
 xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
     
-def process_tar_to_netcdf(tar_path, articles, output_nc):
+def tar_to_ds(tar_path, articles, output_nc):
     data_all = []
 
     with tarfile.open(tar_path, "r:*") as tar:
@@ -21,7 +21,6 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
 
         time_steps = len(fasta_members)
         print(f'Tarball:  number of time-steps {time_steps}')
-
 
         with tempfile.TemporaryDirectory() as tmpdir:
             td = Path(tmpdir)
@@ -58,26 +57,23 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
                 jd = jd.to_value(format='datetime64')
                 time_list.append(jd)
 
-                # 2.2 Extract all data given in article list
-                subprocess.run([
-                   "ddhi", 
-                   "-llist",
-                   "-1VP",  # Column 1: Vertical pressure level
-                   "-2VZ",  # Column 2: Vertical height level
-                            # Column 3: contains article data
-                    str(fasta_path), 
-                ], 
-                stdout = subprocess.DEVNULL,
-                check=True)
-
                 # 3. Read in articles from dta files, save to DataArrays
                 data = np.ones([n,d])
                 for index, article in enumerate(articles):
+                    # 2.2 Extract each article
+                    result = subprocess.run([
+                       "lfac", 
+                       str(fasta_path),
+                       article
+                    ], 
+                    capture_output=True,
+                    text=True,
+                    check=True)
+
                    # article data
-                    datFile =  td / f"{fasta_path.stem}.tmp.{article}.dta"
-                    docFile =  td / f"{fasta_path.stem}.tmp.{article}.doc"
-                    data = np.loadtxt(datFile) 
-                    da_data = data[:,2].reshape(d,n).transpose()
+                   #docFile =  td / f"{fasta_path.stem}.tmp.{article}.doc"
+                    data = np.fromstring(result.stdout, sep ='\n')
+                    da_data = data.reshape(d,n).transpose()
                     
                     # non indexed coordinates: pressure and height
                     #da = da.assign_coords(pressure=(['levels','domain'], data[:,0].reshape(d,n).transpose()))
@@ -94,8 +90,8 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
                                 name = article
                                 )
                         # read in attribures for article
-                        doc  = parse_ddh_attributes(docFile)
-                        da.attrs = doc # store attributes
+                       #doc  = parse_ddh_attributes(docFile)
+                       #da.attrs = doc # store attributes
                         da[tx]=da_data
                         print(f'Appending article {da.name}')
                         data_all.append(da)
@@ -105,6 +101,8 @@ def process_tar_to_netcdf(tar_path, articles, output_nc):
                         return
                     else:
                         da[tx]=da_data
+                
+                os.remove(str(fasta_path))
 
         if(not os.path.exists(tmpdir)):
             print('\nTemporary dir removed succesfully')
@@ -145,5 +143,5 @@ def parse_ddh_attributes(file_path):
 with open('list') as file:
     articles = [line.rstrip() for line in file]
 
-#DS = process_tar_to_netcdf(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
-DS = process_tar_to_netcdf(tar_path = 'data/ddh_files.tar.gz', articles= articles, output_nc = 'test.nc')
+#DS = tar_to_ds(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
+DS = tar_to_ds(tar_path = 'data/ddh_files.tar.gz', articles= articles, output_nc = 'test.nc')

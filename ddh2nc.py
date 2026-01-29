@@ -36,7 +36,7 @@ def worker_ddh(fasta_path, articles = None):
     articles, and returns a single xarray Dataset.
     """
 
-    print(f"PID [{os.getpid()}]: file {fasta_path.name} ")
+#   print(f"PID [{os.getpid()}]: file {fasta_path.name} ")
 
     # 1. run ddhtoolbox
     # 1.1  determine number of  levels, domains and time-steps for file

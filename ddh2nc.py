@@ -5,6 +5,7 @@ import os
 import xarray as xr
 import numpy as np
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor
 import tqdm
 
 
@@ -13,9 +14,11 @@ xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explici
 def tar_to_ds(tar_path, articles, output_nc):
     DataArray_list = []
 
+    print(f'Tarball:  opening {tar_path}')
     with tarfile.open(tar_path, "r:*") as tar:
         # Filter for .fa files
         fasta_members = [m for m in tar.getmembers() if m.name.endswith("s")]
+        fasta_members = fasta_members[0::10]
 
         time_steps = len(fasta_members)
         print(f'Tarball:  number of time-steps {time_steps}')
@@ -137,6 +140,9 @@ def tar_to_ds(tar_path, articles, output_nc):
 
     return ds
 
+
+
+
 def parse_ddh_attributes(file_path):
     """
     Extracts ddh attributs from .doc file, returns dict
@@ -157,8 +163,104 @@ def parse_ddh_attributes(file_path):
                 continue
     return attributes
 
-with open('list') as file:
+def run_tool_worker(fasta_path):
+    """
+    Worker: Runs tool, parses files, and returns a single-sample xarray Dataset.
+    """
+    # 1. Run the tool (shell=False)
+    # Assuming ddh_x outputs numerical data to stdout and metadata to a .doc file
+    result = subprocess.run(["ddh_x", str(fasta_path)],
+                            capture_output=True, text=True, check=True)
+
+    # 2. Parse the numerical output from stdout
+    # (Example: assuming stdout is a column of numbers)
+    data_values = np.fromstring(result.stdout, sep='\n')
+
+    # 3. Parse metadata from the doc file
+    doc_path = fasta_path.with_suffix('.doc')
+    metadata = parse_attributes(doc_path)
+
+    # 4. Create a single-sample Dataset
+    # We add a 'sample' dimension so we can merge them later
+    ds = xr.Dataset(
+        data_vars={
+            "measurements": (("index"), data_values),
+        },
+        coords={
+            "sample": fasta_path.stem,
+            "index": np.arange(len(data_values))
+        },
+        attrs=metadata
+    )
+    # Expand dims to make 'sample' an actual dimension for concatenating
+    return ds.expand_dims("sample")
+
+def main_pipeline(tar_path, output_nc):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        td = Path(tmpdir)
+
+        # Step 1: Extract (Serial)
+        with tarfile.open(tar_path, "r:*") as tar:
+            print(f'Extracting to {td}')
+            fasta_members = [m for m in tar.getmembers() if m.name.endswith("s")]
+           #fasta_members = fasta_members[0::10]
+           #tar.extractall(path=td)
+            for tx, member in (enumerate(tqdm.tqdm(fasta_members))):
+                # 1. Extract FASTA to a temp file
+                fasta_path = td / os.path.basename(member.name)
+                with tar.extractfile(member) as f_in, open(fasta_path, "wb") as f_out:
+                    f_out.write(f_in.read())
+
+            fasta_files = list(td.glob("*s"))
+
+        # Step 2: Process (Parallel)
+        print(f"Processing {len(fasta_files)} files across CPU cores...")
+
+        return
+        with ProcessPoolExecutor() as executor:
+            # results will be a list of individual xarray Datasets
+            individual_datasets = list(executor.map(run_tool_worker, fasta_files))
+
+        # Step 3: Combine (Serial)
+        # combine_by_coords merges them along the 'sample' dimension we created
+        full_ds = xr.combine_by_coords(individual_datasets)
+
+        # Step 4: Export
+        full_ds.to_netcdf(output_nc)
+        print(f"NetCDF saved to {output_nc}")
+
+def dir_pipelie(dir_path, output_nc):
+
+        # Initialize the directory ('.' for current directory)
+        base_dir = Path(dir_path)
+
+        # Use a list comprehension to resolve absolute paths
+        fasta_files = [f.resolve() for f in base_dir.glob('*s')]
+
+
+        # Step 2: Process (Parallel)
+        print(f"Processing {len(fasta_files)} files across CPU cores...")
+
+        return
+        with ProcessPoolExecutor() as executor:
+            # results will be a list of individual xarray Datasets
+            individual_datasets = list(executor.map(run_tool_worker, fasta_files))
+
+        # Step 3: Combine (Serial)
+        # combine_by_coords merges them along the 'sample' dimension we created
+        full_ds = xr.combine_by_coords(individual_datasets)
+
+        # Step 4: Export
+        full_ds.to_netcdf(output_nc)
+        print(f"NetCDF saved to {output_nc}")
+
+
+
+with open('listFull2') as file:
     articles = [line.rstrip() for line in file]
 
-DS = tar_to_ds(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
+#DS = tar_to_ds(tar_path = 'data/test.tar.gz', articles= articles, output_nc = 'test.nc')
 #DS = tar_to_ds(tar_path = 'data/ddh_files.tar.gz', articles= articles, output_nc = 'test.nc')
+#DS.to_netcdf('out.nc')
+
+dir_pipelie('data', 'out.nc')

@@ -88,9 +88,12 @@ def worker_ddh(chunk_list, worker_id, articles = None):
     ds_list = []
     time, n, d = read_file_Tnd(chunk_list[0])
 
-    pbar = tqdm.tqdm(chunk_list, desc=f"Worker {worker_id}", position=worker_id + 1, leave=False)
+   #pbar = tqdm.tqdm(chunk_list, desc=f"Worker {worker_id}", position=worker_id + 1, leave=False)
+    pbar = chunk_list
 
-    for file in pbar:
+    for i, file in enumerate(pbar):
+
+        print(f{'PID [{os.getpid()}]: files {i} of {len(chunk_list)}')
         ds = xr.Dataset()
 
         time, n, d = read_file_Tnd(file)
@@ -129,22 +132,21 @@ def dir_pipeline(dir_path, output_nc, articles, num_workers):
 
     base_dir = Path(dir_path)
     # 1.  List  comprehension to resolve absolute paths (serial)
-    fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
 
-    print(f"{len(articles)} articles")
+    print(f'Scanning dir {dir_path}...')
+    fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
+    print(f'Found {len(fasta_files)} DDH files')
+    print(f"{len(articles)} articles to be extracted")
 
     ds_list = []
 
-    # 1. Determine number of workers
-   #num_workers = os.cpu_count()
-   #num_workers = 4
     num_workers = num_workers or 1
 
     # 2. Split files into chunks (OMP-style)
     chunks = [list(c) for c in np.array_split(fasta_files, num_workers)]
 
     # 3.  Split chunks among  threads for processing (parallel)
-    with ProcessPoolExecutor(max_workers=4) as executor:
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [
             executor.submit(worker_ddh, chunk,i, articles)
             for i, chunk in enumerate(chunks)

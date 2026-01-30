@@ -1,11 +1,12 @@
 import subprocess
-import tempfile
 import os
 import xarray as xr
 import numpy as np
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
+import sys
+import getopt
 
 
 xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
@@ -117,7 +118,7 @@ def worker_ddh(chunk_list, worker_id, articles = None):
     return xr.combine_by_coords(ds_list)
 
 
-def dir_pipeline(dir_path, output_nc, articles):
+def dir_pipeline(dir_path, output_nc, articles, num_workers):
 
     """
     Main process:
@@ -135,8 +136,8 @@ def dir_pipeline(dir_path, output_nc, articles):
     ds_list = []
 
     # 1. Determine number of workers
-    num_workers = os.cpu_count()
-    num_workers = 4
+   #num_workers = os.cpu_count()
+   #num_workers = 4
     num_workers = num_workers or 1
 
     # 2. Split files into chunks (OMP-style)
@@ -162,7 +163,58 @@ def dir_pipeline(dir_path, output_nc, articles):
     print(f"NetCDF saved to {output_nc}")
 
 
-with open('listFull2') as file:
-    articles = [line.rstrip() for line in file]
 
-DS = dir_pipeline(dir_path = 'data',articles=articles, output_nc = 'out.nc')
+def parse_args(argv):
+    # Default values
+    input_dir = ""
+    output_file = ""
+    article_list = ""
+    threads = 1
+
+    usage_str = 'usage: python ddh2nc.py -d <dir> -o <out> -a <articles> [-n <threads>]'
+
+    try:
+        opts, args = getopt.getopt(
+            argv,
+            "hd:o:a:n:",
+            ["help", "dir=", "output=", "articles=", "threads="]
+        )
+    except getopt.GetoptError:
+        print(usage_str)
+        sys.exit(2)
+
+    for opt, arg in opts:
+        if opt in ("-h", "--help"):
+            print(usage_str)
+            sys.exit()
+        elif opt in ("-d", "--dir"):
+            input_dir = arg
+        elif opt in ("-o", "--output"):
+            output_file = arg
+        elif opt in ("-a", "--articles"):
+            article_list = arg
+        elif opt in ("-n", "--threads"):
+            try:
+                threads = int(arg)
+            except ValueError:
+                print("Error: -n (threads) must be an integer.")
+                sys.exit(2)
+
+    # Validate required arguments
+    if not all([input_dir, output_file, article_list]):
+        print("Error: Missing required arguments.")
+        print(usage_str)
+        sys.exit(2)
+
+    return [input_dir, output_file, article_list, threads]
+
+
+if __name__ == "__main__":
+    input_dir, output_file, article_list, threads =  parse_args(sys.argv[1:])
+
+    with open(article_list) as file:
+        articles = [line.rstrip() for line in file]
+
+    DS = dir_pipeline(dir_path = input_dir ,articles=articles, output_nc = output_file, num_workers = threads)
+    print(DS)
+

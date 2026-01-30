@@ -85,57 +85,67 @@ def worker_ddh(chunk_list, worker_id, articles = None):
     articles, and returns a single xarray Dataset.
     """
 
-    ds_list = []
+    DataArray_list = []
+    time_steps = len(chunk_list)
     time, n, d = read_file_Tnd(chunk_list[0])
 
    #pbar = tqdm.tqdm(chunk_list, desc=f"Worker {worker_id}", position=worker_id + 1, leave=False)
     pbar = chunk_list
 
+    # 1. Initialize DataArrays, one for each article
+    for  article in (articles):
+        n, d = extract_article(chunk_list[0], article, d).shape # testing
+        da = xr.DataArray(data = np.zeros([time_steps,n,d]),
+                dims = [ 'time', 'levels', 'domain', ],
+                coords={'levels':np.arange(n)+1,
+                    'domain' : np.arange(d)+1,
+                    },
+                name = article
+                )
+       #print(f'Appending article {da.name}')
+        DataArray_list.append(da)
+
+    time_list = []
     for i, file in enumerate(pbar):
 
-        print(f{'PID [{os.getpid()}]: files {i} of {len(chunk_list)}')
-        ds = xr.Dataset()
+        print(f'PID [{os.getpid()}]: files {i} of {len(chunk_list)}')
 
         time, n, d = read_file_Tnd(file)
-        for article in articles:
-            data_read = extract_article(file, article, d)
+        time_list.append(time)
+        for index, article in enumerate(articles):
+            da_data = extract_article(file, article, d)
 
-            #  store data as DataArray for article
-            da = xr.DataArray(data = data_read,
-                    dims = [ 'levels', 'domain' ],
-                    coords={'levels':np.arange(n)+1,
-                        'domain' : np.arange(d)+1,
-                        'time': time
-                        },
-                    name = article
-                    )
+            # 4.2.1 Update each DataArray in master list
+            da_loc = DataArray_list[index]
+            da_loc.data[i,:,:] = da_data
 
-            #  assemble article to DataSet
-            ds[article] = da
+    ds = xr.Dataset()
 
-        ds.attrs['Number of Domains'] = d
-        ds.attrs['Number of levels'] = n
-        ds_list.append(ds.expand_dims('time'))
+    for index, article in enumerate(articles):
+        ds[article] = DataArray_list[index]
 
-    # combine to dataset for this worker
-    return xr.combine_by_coords(ds_list)
+    ds.attrs['Number of Domains'] = d
+    ds.attrs['Number of levels'] = n
+    ds.coords['time'] = time_list
+    return ds
 
+def dir_list(dir_path):
 
-def dir_pipeline(dir_path, output_nc, articles, num_workers):
+    base_dir = Path(dir_path)
+    print(f'Scanning dir {dir_path}...')
+    fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
+    print(f'Found {len(fasta_files)} DDH files')
+
+    return fasta_files
+
+def files_pipeline(fasta_files, articles, num_workers):
 
     """
     Main process:
     @input dir_path: directory where DDH files are stored (DHFDL*s)
-    @input output_nc: absolute path to write netcdf output
     @input articles: list of DDH articles for extraction
     """
 
-    base_dir = Path(dir_path)
-    # 1.  List  comprehension to resolve absolute paths (serial)
-
-    print(f'Scanning dir {dir_path}...')
-    fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
-    print(f'Found {len(fasta_files)} DDH files')
     print(f"{len(articles)} articles to be extracted")
 
     ds_list = []
@@ -157,13 +167,8 @@ def dir_pipeline(dir_path, output_nc, articles, num_workers):
 
 
     # 3. Assemble final DataSet
-    full_ds = xr.combine_by_coords(ds_list)
+    full_ds = xr.concat(ds_list, dim='time')
     return full_ds
-
-    # 4. Export
-    full_ds.to_netcdf(output_nc)
-    print(f"NetCDF saved to {output_nc}")
-
 
 
 def parse_args(argv):
@@ -217,6 +222,9 @@ if __name__ == "__main__":
     with open(article_list) as file:
         articles = [line.rstrip() for line in file]
 
-    DS = dir_pipeline(dir_path = input_dir ,articles=articles, output_nc = output_file, num_workers = threads)
+    file_list = dir_list(input_dir)
+    DS = files_pipeline(file_list, articles=articles, num_workers = threads)
     print(DS)
+    print(f'Writing NetCDF file to {output_file}')
+    DS.to_netcdf(output_file)
 

@@ -2,7 +2,6 @@ import subprocess
 import os
 import xarray as xr
 import numpy as np
-from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
 import sys
@@ -106,7 +105,7 @@ def worker_ddh(chunk_list, worker_id, articles = None):
     time_list = []
     for i, file in enumerate(pbar):
 
-        print(f'PID [{os.getpid()}]: files {i} of {len(chunk_list)}')
+        print(f'Worker {worker_id}: files {i} of {len(chunk_list)}')
 
         time, n, d = read_file_Tnd(file)
         time_list.append(time)
@@ -127,14 +126,20 @@ def worker_ddh(chunk_list, worker_id, articles = None):
     ds.coords['time'] = time_list
     return ds
 
-def dir_list(dir_path):
+def dir_list(dir_path, prefix='DHFDL' ):
 
-    base_dir = Path(dir_path)
+    file_list = []
     print(f'Scanning dir {dir_path} ...')
-    fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
-    print(f'Found {len(fasta_files)} DDH files')
 
-    return fasta_files
+    for root, dirs, files in os.walk(dir_path):
+        for file in files:
+            if file.startswith(prefix):
+                file_list.append(os.path.join(root, file))
+
+    print(f'Found {len(file_list)} DDH files')
+
+    return file_list
+
 
 def files_pipeline(fasta_files, articles, num_workers):
 

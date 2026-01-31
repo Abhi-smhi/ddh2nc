@@ -1,0 +1,5 @@
+# Processing Configuration
+input_directory: "$SCRATCH/deode/CY49t2_HARMONIE_AROME_LES_input_Paris_200m_linear_20230820/archive/2023/08/22/03/mbr000"
+output_file: "$PERM/out_CY49t2_HARMONIE_AROME.nc"
+article_list: "ddh_article_list"
+num_threads: 32

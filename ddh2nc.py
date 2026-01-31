@@ -6,11 +6,9 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import tqdm
 import sys
-import getopt
-
+import yaml
 
 xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
-
 def parse_ddh_attributes(file_path):
     """
     Extracts ddh attributs from .doc file, returns dict
@@ -132,7 +130,7 @@ def worker_ddh(chunk_list, worker_id, articles = None):
 def dir_list(dir_path):
 
     base_dir = Path(dir_path)
-    print(f'Scanning dir {dir_path}...')
+    print(f'Scanning dir {dir_path} ...')
     fasta_files = [f.resolve() for f in base_dir.glob('DHFDL*s')]
     print(f'Found {len(fasta_files)} DDH files')
 
@@ -170,54 +168,58 @@ def files_pipeline(fasta_files, articles, num_workers):
     full_ds = xr.concat(ds_list, dim='time')
     return full_ds
 
+def load_config(config_path):
+    """Loads and validates the YAML configuration file."""
+    if not os.path.exists(config_path):
+        print(f"Error: Configuration file '{config_path}' not found.")
+        sys.exit(1)
 
-def parse_args(argv):
-    # Default values
-    input_dir = ""
-    output_file = ""
-    article_list = ""
-    threads = 1
+    with open(config_path, 'r') as file:
+        # 1. Read the raw text from the file
+        raw_config = file.read()
 
-    usage_str = 'usage: python ddh2nc.py -d <dir> -o <out> -a <articles> [-n <threads>]'
+        # 2. Expand environment variables in the string
+        expanded_config = os.path.expandvars(raw_config)
+        try:
+            config = yaml.safe_load(expanded_config)
+        except yaml.YAMLError as exc:
+            print(f"Error parsing YAML: {exc}")
+            sys.exit(1)
 
-    try:
-        opts, args = getopt.getopt(
-            argv,
-            "hd:o:a:n:",
-            ["help", "dir=", "output=", "articles=", "threads="]
-        )
-    except getopt.GetoptError:
-        print(usage_str)
-        sys.exit(2)
+    return config
 
-    for opt, arg in opts:
-        if opt in ("-h", "--help"):
-            print(usage_str)
-            sys.exit()
-        elif opt in ("-d", "--dir"):
-            input_dir = arg
-        elif opt in ("-o", "--output"):
-            output_file = arg
-        elif opt in ("-a", "--articles"):
-            article_list = arg
-        elif opt in ("-n", "--threads"):
-            try:
-                threads = int(arg)
-            except ValueError:
-                print("Error: -n (threads) must be an integer.")
-                sys.exit(2)
+def parse_config():
+    """Parses config.yaml, returns list [input_dir, output_file, article_list, threads]"""
 
-    # Validate required arguments
-    if not all([input_dir, output_file, article_list]):
-        print("Error: Missing required arguments.")
-        print(usage_str)
-        sys.exit(2)
+    config_file = "config.yaml"
+    cfg = load_config(config_file)
+
+    # Extracting variables with defaults for safety
+    input_dir = cfg.get('input_directory')
+    output_file = cfg.get('output_file')
+    article_list = cfg.get('article_list')
+    threads = cfg.get('num_threads', 1) # Default to 1 if not specified
+
+    # Simple validation
+    required_fields = ['input_directory', 'output_file', 'article_list']
+    for field in required_fields:
+        if not cfg.get(field):
+            print(f"Error: Missing required field '{field}' in {config_file}")
+            sys.exit(1)
+
+    print("\n\n--- Configuration Loaded ---")
+    print(f"Directory: {input_dir}")
+    print(f"Output:    {output_file}")
+    print(f"Articles:  {article_list}")
+    print(f"Threads:   {threads}")
+    print("----------------------------")
 
     return [input_dir, output_file, article_list, threads]
 
 
+
 if __name__ == "__main__":
-    input_dir, output_file, article_list, threads =  parse_args(sys.argv[1:])
+    input_dir, output_file, article_list, threads =  parse_config()
 
     with open(article_list) as file:
         articles = [line.rstrip() for line in file]

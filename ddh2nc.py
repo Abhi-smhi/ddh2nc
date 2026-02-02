@@ -145,8 +145,9 @@ def files_pipeline(fasta_files, articles, num_workers):
 
     """
     Main process:
-    @input dir_path: directory where DDH files are stored (DHFDL*s)
-    @input articles: list of DDH articles for extraction
+    dir_path: directory where DDH files are stored (DHFDL*s)
+    articles: list of DDH articles for extraction
+    num_workers: number of threads to use
     """
 
     print(f"{len(articles)} articles to be extracted")

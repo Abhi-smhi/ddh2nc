@@ -5,7 +5,7 @@ multiple domains. Currently only for vertical profiles. Runs in parallel.
 
 
 ## Prerequisites
-  - Python 4.10+
+  - Python 3.10+
   - ddh toolbox [https://github.com/UMR-CNRM/ddhtoolbox]
     - ensure tools `lfac` and `ddhr` are on `$PATH`
 

@@ -171,7 +171,8 @@ def files_pipeline(fasta_files, articles, num_workers):
 
 
     # 3. Assemble final DataSet
-    full_ds = xr.concat(ds_list, dim='time')
+    full_ds = xr.concat(ds_list, dim='time').sortby('time')
+
     return full_ds
 
 def load_config(config_path):

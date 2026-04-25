@@ -1,41 +1,32 @@
 import subprocess
-import os
 import xarray as xr
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import tqdm
-import sys
-import yaml
+import glob as glob
+import dask.array as da
+import dask
+from dask.distributed import Client, get_client
 
-xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
-def parse_ddh_attributes(file_path):
-    """
-    Extracts ddh attributs from .doc file, returns dict
-    """
-    attributes = {}
-    with open(file_path, 'r') as f:
-        for line in f:
-            if line.startswith('#'):
-                # Remove '#' and split by the first colon
-                content = line.lstrip('#').strip()
-                if '=' in content:
-                    key, value = content.split('=', 1)
-                    #if key in ['TITRE','UNITE']:
-                    attributes[key.strip().lower()] = value.strip()
-            else:
-                # Break early if attributes are only at the top
-                # or continue if they are scattered
-                continue
-    return attributes
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                           USER CONFIG STARTS HERE                          │
+# └────────────────────────────────────────────────────────────────────────────┘
+INPUT_DIR       = "/ec/res4/scratch/swe7088/deode/osm_pgd_ddh_CY49t2_HARMONIE_AROME_LES_input_Paris_200m_linear_20230820/archive/2023/08/20/12/mbr000/"
+PATTERN         = 'DHFDLDEOD*s'
+OUTPUT_FILE     = "/perm/swe7088/dask_test_out.nc"
+ARTICLE_LIST    = "ddh_article_list2"
+NWORKER         = 1
+MEMLIMIT        = '2GB'
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │                           USER CONFIG ENDS HERE                            │
+# └────────────────────────────────────────────────────────────────────────────┘
 
-
-def read_file_Tnd(fasta_path):
+def read_file_T(fasta_path):
     '''
     Returns list of time (numpy datetime64), no. of levels (int) and domains (int)
     '''
     # 1. run ddhtoolbox
     # 1.1  determine number of  levels, domains and time-steps for file
-    result = subprocess.run([ "ddhr", '-b', '-es', '-d', '-n',
+
+    result = subprocess.run([ "ddhr", '-b', '-es',
         str(fasta_path)
         ],
         capture_output=True,
@@ -43,197 +34,67 @@ def read_file_Tnd(fasta_path):
         check=True)
 
     result = result.stdout
-    date = result[0:16]
-    date = date[0:10] + 'T' + date[11::]
+    start = result[0:10] + 'T' + result[11:16]
+    D = np.fromstring(result[17:], sep='\n')[0] # Duration in s
+    time = np.datetime64(start, 's') + int(D)
 
-    Dnd = np.fromstring(result[17:], sep = '\n')
-    D = int(Dnd[0]) # Duration in s
-    d = int(Dnd[1]) # no. of domains
-    n = int(Dnd[2]) # no. of levels
-    time = np.datetime64(date, 's') + D
+    return time
 
-    return [time, n, d]
-
-def extract_article(fasta_path, article, d):
+def read_file_nd(fasta_path):
     '''
-    Parses DDH file for given article, returns numpy array of size (levels, domains)
-
-    arguments:
-    fasta_path: DDH file name
-    article: article name
-    d: no. of domains
+    Returns list of time (numpy datetime64), no. of levels (int) and domains (int)
     '''
-    result_article = subprocess.run([
-       "lfac",
-       str(fasta_path),
-       article
-    ],
-    capture_output=True,
-    text=True,
-    check=True)
+    # 1. run ddhtoolbox
+    # 1.1  determine number of  levels, domains and time-steps for file
 
-    data = np.fromstring(result_article.stdout, sep ='\n')
-    n = int(data.shape[0]/d)
-    return  data.reshape(d,n).transpose()
+    result = subprocess.run([ "ddhr", '-d', '-n',
+        str(fasta_path)
+        ],
+        capture_output=True,
+        text=True,
+        check=True)
 
-def worker_ddh(chunk_list, worker_id, articles = None):
-    """
-    Worker: Runs Unix tools ddhr and lfac on DDH file list, extracts
-    articles, and returns a single xarray Dataset.
-    """
+    Dnd = np.fromstring(result.stdout, sep='\n')
+    d = int(Dnd[0]) # no. of domains
+    n = int(Dnd[1]) # no. of levels
 
-    DataArray_list = []
-    time_steps = len(chunk_list)
-    time, n, d = read_file_Tnd(chunk_list[0])
-
-   #pbar = tqdm.tqdm(chunk_list, desc=f"Worker {worker_id}", position=worker_id + 1, leave=False)
-    pbar = chunk_list
-
-    # 1. Initialize DataArrays, one for each article
-    for  article in (articles):
-        n, d = extract_article(chunk_list[0], article, d).shape # testing
-        da = xr.DataArray(data = np.zeros([time_steps,n,d]),
-                dims = [ 'time', 'levels', 'domain', ],
-                coords={'levels':np.arange(n)+1,
-                    'domain' : np.arange(d)+1,
-                    },
-                name = article
-                )
-       #print(f'Appending article {da.name}')
-        DataArray_list.append(da)
-
-    time_list = []
-    for i, file in enumerate(pbar):
-
-        print(f'Worker {worker_id}: files {i} of {len(chunk_list)}')
-
-        time, n, d = read_file_Tnd(file)
-        time_list.append(time)
-        for index, article in enumerate(articles):
-            da_data = extract_article(file, article, d)
-
-            # 4.2.1 Update each DataArray in master list
-            da_loc = DataArray_list[index]
-            da_loc.data[i,:,:] = da_data
-
-    ds = xr.Dataset()
-
-    for index, article in enumerate(articles):
-        ds[article] = DataArray_list[index]
-
-    ds.attrs['Number of Domains'] = d
-    ds.attrs['Number of levels'] = n
-    ds.coords['time'] = time_list
-    return ds
-
-def dir_list(dir_path, prefix='DHFDL' ):
-
-    file_list = []
-    print(f'Scanning dir {dir_path} ...')
-
-    for root, dirs, files in os.walk(dir_path):
-        for file in files:
-            if file.startswith(prefix):
-                file_list.append(os.path.join(root, file))
-
-    print(f'Found {len(file_list)} DDH files')
-
-    return file_list
-
-
-def files_pipeline(fasta_files, articles, num_workers):
-
-    """
-    Main process:
-    dir_path: directory where DDH files are stored (DHFDL*s)
-    articles: list of DDH articles for extraction
-    num_workers: number of threads to use
-    """
-
-    print(f"{len(articles)} articles to be extracted")
-
-    ds_list = []
-
-    num_workers = num_workers or 1
-
-    # 2. Split files into chunks (OMP-style)
-    chunks = [list(c) for c in np.array_split(fasta_files, num_workers)]
-
-    # 3.  Split chunks among  threads for processing (parallel)
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [
-            executor.submit(worker_ddh, chunk,i, articles)
-            for i, chunk in enumerate(chunks)
-        ]
-        for future in tqdm.tqdm(as_completed(futures), total=len(futures), desc="Processing chunks"):
-            result = future.result()
-            ds_list.append(result)
-
-
-    # 3. Assemble final DataSet
-    full_ds = xr.concat(ds_list, dim='time').sortby('time')
-
-    return full_ds
-
-def load_config(config_path):
-    """Loads and validates the YAML configuration file."""
-    if not os.path.exists(config_path):
-        print(f"Error: Configuration file '{config_path}' not found.")
-        sys.exit(1)
-
-    with open(config_path, 'r') as file:
-        # 1. Read the raw text from the file
-        raw_config = file.read()
-
-        # 2. Expand environment variables in the string
-        expanded_config = os.path.expandvars(raw_config)
-        try:
-            config = yaml.safe_load(expanded_config)
-        except yaml.YAMLError as exc:
-            print(f"Error parsing YAML: {exc}")
-            sys.exit(1)
-
-    return config
-
-def parse_config():
-    """Parses config.yaml, returns list [input_dir, output_file, article_list, threads]"""
-
-    config_file = "config.yaml"
-    cfg = load_config(config_file)
-
-    # Extracting variables with defaults for safety
-    input_dir = cfg.get('input_directory')
-    output_file = cfg.get('output_file')
-    article_list = cfg.get('article_list')
-    threads = cfg.get('num_threads', 1) # Default to 1 if not specified
-
-    # Simple validation
-    required_fields = ['input_directory', 'output_file', 'article_list']
-    for field in required_fields:
-        if not cfg.get(field):
-            print(f"Error: Missing required field '{field}' in {config_file}")
-            sys.exit(1)
-
-    print("\n\n--- Configuration Loaded ---")
-    print(f"Directory: {input_dir}")
-    print(f"Output:    {output_file}")
-    print(f"Articles:  {article_list}")
-    print(f"Threads:   {threads}")
-    print("----------------------------")
-
-    return [input_dir, output_file, article_list, threads]
-
+    return n, d
 
 
 if __name__ == "__main__":
-    input_dir, output_file, article_list, threads =  parse_config()
+    xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
 
-    with open(article_list) as file:
+    with open(ARTICLE_LIST) as file:
         articles = [line.rstrip() for line in file]
 
-    file_list = dir_list(input_dir)
-    DS = files_pipeline(file_list, articles=articles, num_workers = threads)
-    print(DS)
-    print(f'Writing NetCDF file to {output_file}')
-    DS.to_netcdf(output_file)
+    # 1. Setup Dask Cluster
+    try:
+        client = get_client()
+        print(f"Using existing client: {client}")
+    except ValueError:
+        client = Client(n_workers=NWORKER, threads_per_worker=1, memory_limit=MEMLIMIT)
+        print(f"Created new dask client: {client}")
+
+    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))[0:1000]
+
+    n_times = len(file_list)
+    print(f'Found {n_times} DDH files')
+
+    # -- Parse no. of files and domains
+
+    n_levels, n_domains = read_file_nd(file_list[0])
+    print(f'DDH files contain {n_domains} domains, of {n_levels} levels')
+
+    # -- prepare dask delayed functions
+    read_time_delayed = dask.delayed(read_file_T)
+
+    # -- assess times for all files
+    times = [read_time_delayed(file) for file in file_list]
+    time_d = [da.from_delayed(time, shape=(), dtype='datetime64') for time in times]
+    time_stack = da.stack(time_d, axis=0)
+
+
+
+
+
 

@@ -107,17 +107,17 @@ if __name__ == "__main__":
     with open(ARTICLE_LIST) as file:
         articles = [line.rstrip() for line in file]
 
-    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))[0:150]
+    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))[0:1500]
 
     n_times = len(file_list)
-    print(f'\n\n-------------  INFO  -------------')
+    print(f'\n\n-------------------------INFO------------------------------')
     print(f'Found {n_times} DDH files')
 
     # 2. Parse no. of files and domains
 
     n_levels, n_domains = read_file_nd(file_list[0])
     print(f'DDH files contain {n_domains} domains, of {n_levels} levels')
-    print(f'\----------------------------------')
+    print(f'-----------------------------------------------------------')
 
 
     with Client(n_workers=NWORKER, threads_per_worker=1, memory_limit=MEMLIMIT) as client:
@@ -148,9 +148,28 @@ if __name__ == "__main__":
 
             lazy_batches.append(b_array)
 
-        da_stack = da.concatenate(lazy_batches, axis=0)
         print(f'[Dask] Reading data in {len(file_batches)} batches')
-        persist_data = client.persist(da_stack)
-        progress(persist_data)
+        da_stack = da.concatenate(lazy_batches, axis=0)
+
+        print(f'[xarray] Creating data array')
+        d_array = xr.DataArray(
+                data=da_stack,
+                dims = ['time', 'article', 'level', 'domain'],
+                coords = {
+                    'time': actual_times,
+                    'article': articles,
+                    'level': np.arange(n_levels) + 1,
+                    'domain': np.arange(n_domains) + 1,
+                    }
+
+                )
+        print(f'[xarray] Datasets for each article')
+        ds = d_array.to_dataset(dim='article')
+
+        print(f'[Dask] Writing to {OUTPUT_FILE}')
+        write_job = client.persist(ds.to_zarr(OUTPUT_FILE, compute=False, mode='w'))
+        progress(write_job)
+
+        print(f'[Dask] Done, closing dask client')
 
 

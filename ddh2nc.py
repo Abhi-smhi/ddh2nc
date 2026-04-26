@@ -11,10 +11,10 @@ from dask.distributed import Client, get_client, progress
 # └────────────────────────────────────────────────────────────────────────────┘
 INPUT_DIR       = "/ec/res4/scratch/swe7088/deode/osm_pgd_ddh_CY49t2_HARMONIE_AROME_LES_input_Paris_200m_linear_20230820/archive/2023/08/20/12/mbr000/"
 PATTERN         = 'DHFDLDEOD*s'
-OUTPUT_FILE     = "/perm/swe7088/dask_test_out.nc"
+OUTPUT_FILE     = "/perm/swe7088/dask_test_out.zarr"
 ARTICLE_LIST    = "ddh_article_list2"
-NWORKER         = 2
-MEMLIMIT        = '4GB'
+NWORKER         = 16
+MEMLIMIT        = '16GB'
 # ┌────────────────────────────────────────────────────────────────────────────┐
 # │                           USER CONFIG ENDS HERE                            │
 # └────────────────────────────────────────────────────────────────────────────┘
@@ -98,18 +98,7 @@ if __name__ == "__main__":
     with open(ARTICLE_LIST) as file:
         articles = [line.rstrip() for line in file]
 
-
-    # 1. Setup Dask Cluster
-    try:
-        client = get_client()
-        print(f"Using existing client: {client}")
-    except ValueError:
-        client = Client(n_workers=NWORKER, threads_per_worker=1, memory_limit=MEMLIMIT)
-
-      # client = Client()
-        print(f"Created new dask client: {client}")
-
-    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))[0:500]
+    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))
 
     n_times = len(file_list)
     print(f'Found {n_times} DDH files')
@@ -119,55 +108,61 @@ if __name__ == "__main__":
     n_levels, n_domains = read_file_nd(file_list[0])
     print(f'DDH files contain {n_domains} domains, of {n_levels} levels')
 
-    # -- prepare dask delayed functions
-    read_time_delayed = dask.delayed(read_file_T)
-    read_DDH_delayed  = dask.delayed(read_DDH_data)
 
-    # 3. Assemble dask arrays
+    with Client(n_workers=NWORKER, threads_per_worker=1, memory_limit=MEMLIMIT) as client:
 
-    # -- assess times for all files
-    print(f'[Lazy] Assebling dask array for validites')
-    times_list = [read_time_delayed(file) for file in file_list]
-    # ---- dask array
-    time_da = [da.from_delayed(time, shape=(), dtype='datetime64')
-            for time in times_list]
-    time_stack = da.stack(time_da, axis=0)
+        print(f'\n\nDask client: {client}')
 
-    print(f'[Lazy] Assebling dask array for DDH data')
-    data_list = [read_DDH_delayed(path=file, articles=articles,
-        n_domains=n_domains, n_levels=n_levels)
-            for file in file_list]
-    # ---- dask array
-    data_da = [da.from_delayed(data,
-        shape=(len(articles), n_levels, n_domains),
-        dtype='float64')
-        for data in data_list]
-    da_stack = da.stack(data_da, axis=0)
+        # -- prepare dask delayed functions
+        read_time_delayed = dask.delayed(read_file_T)
+        read_DDH_delayed  = dask.delayed(read_DDH_data)
+
+        # 3. Assemble dask arrays
+
+        # -- assess times for all files
+        print(f'[Lazy] Assebling dask array for validites')
+        times_list = [read_time_delayed(file) for file in file_list]
+        # ---- dask array
+        time_da = [da.from_delayed(time, shape=(), dtype='datetime64')
+                for time in times_list]
+        time_stack = da.stack(time_da, axis=0)
+
+        print(f'[Lazy] Assebling dask array for DDH data')
+        data_list = [read_DDH_delayed(path=file, articles=articles,
+            n_domains=n_domains, n_levels=n_levels)
+                for file in file_list]
+        # ---- dask array
+        data_da = [da.from_delayed(data,
+            shape=(len(articles), n_levels, n_domains),
+            dtype='float64')
+            for data in data_list]
+        da_stack = da.stack(data_da, axis=0)
 
 
-    # --  Assemble the xarray (dask) dataset
-    data_vars = {}
-    print(f'[Lazy] Assembling xarray dataset')
-    for i, article in enumerate(articles):
-        data_vars[article] = (['time', 'level', 'domain'], da_stack[:, i,:,:])
+        # --  Assemble the xarray (dask) dataset
+        print(f'[Lazy] Convert to Dataarray')
+        da_lazy = xr.DataArray(
+                data=da_stack,
+                dims=['time','article', 'level', 'domain'],
+                coords = {
+                    'time': time_stack,
+                    'article': articles,
+                    'level': np.arange(n_levels) +1,
+                    'domain': np.arange(n_domains) +1,
+                    },
+                )
+        print(f'[Lazy] Chunking dataset')
+        ds_da = da_lazy.to_dataset(dim='article')
+        ds_da = ds_da.chunk({'time':'auto','level':-1, 'domain':-1})
 
-    ds_da = xr.Dataset(
-            data_vars=data_vars,
-            coords = {
-                'time': time_stack,
-                'level': np.arange(n_levels) +1,
-                'domain': np.arange(n_domains) +1,
-                }
-            )
-    print(f'[Lazy] Chunking dataset')
-    ds_da = ds_da.chunk({'time':'auto','level':-1, 'domain':-1})
-    print(f'[Lazy] Preparing to write')
-    jobs = ds_da.to_netcdf(OUTPUT_FILE, mode='w', engine='h5netcdf', compute=False)
+        print(f'[Lazy] Assembled Dataset .. ')
+        print(ds_da)
 
-    print(f'Compute and writing to {OUTPUT_FILE}')
-    futures = client.compute(jobs)
-    progress(futures)
+        print(f'[Lazy] Preparing to write')
+        jobs = ds_da.to_zarr(OUTPUT_FILE, mode='w', compute=False)
+        print(f'Compute and writing to {OUTPUT_FILE}')
+        futures = client.compute(jobs)
+        progress(futures)
 
-    print(f'Job done!\nClosing dask client')
-    client.close()
+        print(f'Job done!\nClosing dask client')
 

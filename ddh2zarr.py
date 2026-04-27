@@ -1,4 +1,5 @@
 import subprocess
+import time
 import xarray as xr
 import numpy as np
 import glob as glob
@@ -14,9 +15,9 @@ INPUT_DIR       = "/ec/res4/scratch/swe7088/deode/osm_pgd_ddh_CY49t2_HARMONIE_AR
 PATTERN         = 'DHFDLDEOD*s'
 OUTPUT_FILE     = "/perm/swe7088/dask_test_out.zarr"
 ARTICLE_LIST    = "ddh_article_list2"
-NWORKER         = 4
+NWORKER         = 32
 BATCH_SIZE      = 100
-MEMLIMIT        = '16GB'
+MEMLIMIT        = '32GB'
 # ┌────────────────────────────────────────────────────────────────────────────┐
 # │                           USER CONFIG ENDS HERE                            │
 # └────────────────────────────────────────────────────────────────────────────┘
@@ -102,12 +103,11 @@ def read_batch(files, articles, n_levels, n_domains):
 
 
 if __name__ == "__main__":
-    xr.set_options(use_new_combine_kwarg_defaults=True) # To set coordinates explicitly
 
     with open(ARTICLE_LIST) as file:
         articles = [line.rstrip() for line in file]
 
-    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))[0:1500]
+    file_list = sorted(glob.glob(INPUT_DIR + PATTERN))
 
     n_times = len(file_list)
     print(f'\n\n-------------------------INFO------------------------------')
@@ -168,7 +168,11 @@ if __name__ == "__main__":
 
         print(f'[Dask] Writing to {OUTPUT_FILE}')
         write_job = client.persist(ds.to_zarr(OUTPUT_FILE, compute=False, mode='w'))
+        t_start = time.time()
         progress(write_job)
+        t_end = time.time()
+        duration = int(t_end - t_start)
+        print(f'[Dask] Writing completed in {duration} seconds')
 
         print(f'[Dask] Done, closing dask client')
 

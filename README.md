@@ -2,6 +2,12 @@
 
 This script provides a high-performance, parallelized workflow for extracting data from **DDH (Diagnostic par Domaines Horizontaux)** files and converting them into a modern, cloud-optimized **Zarr** format. It leverages **Dask** for distributed computing and **xarray** for multi-dimensional data management.
 
+
+## TODO:
+  - Extract fluxes using half levels
+  - Unit conversion (extensive -> intensive)
+  - Update example plot
+
 ---
 
 ##  Features
@@ -59,7 +65,6 @@ The script contains a dedicated **USER CONFIG** section at the top. Modify these
     ```bash
     lfalaf (yourddhfile)
     ```
-    etc. Check available DDH articles in each file using
 2.  **Configure the Script:** Edit the `USER CONFIG` section in the Python script as described above.
 3.  **Run the Script:**
     ```bash
